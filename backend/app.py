@@ -1,7 +1,11 @@
 from flask import Flask, request, render_template_string
+from amazon_scraper import fetch_amazon_data
+from amazon_image_scraper import get_amazon_image
+from database import init_db, save_product_to_db
+import sqlite3
 
 app = Flask(__name__)
-
+init_db()
 # Basic HTML and CSS template to mimic the image
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -141,12 +145,13 @@ HTML_TEMPLATE = '''
             <div class="section-title">Product Preview:</div>
             <div class="product-preview">
                 <div class="product-preview-image">
-                    {% if product_info.image_placeholder %}
-                        {{ product_info.image_placeholder }}
-                    {% else %}
-                        [Image Placeholder]
-                    {% endif %}
-                </div>
+    {% if product_info.image_url %}
+        <img src="{{ product_info.image_url }}" alt="Product Image" style="width: 100%; height: 100%; object-fit: contain;">
+    {% else %}
+        [Image Not Available]
+    {% endif %}
+</div>
+
                 <div class="product-info">
                     <p><strong>{{ product_info.name }}</strong></p>
                     <p class="price-info">Current Price: ₹{{ product_info.price }}</p>
@@ -178,11 +183,10 @@ HTML_TEMPLATE = '''
 
 @app.route('/')
 def home():
-    # Initialize with default/empty data for initial load
     default_product_info = {
-        "name": "Product Name (e.g., Samsung Galaxy M14)",
-        "price": "N/A",
-        "image_placeholder": "Product Image"
+    "name": "Product Name",
+    "price": "N/A",
+    "image_url": None
     }
     default_other_platforms = {
         "Flipkart": "N/A",
@@ -196,36 +200,41 @@ def home():
 @app.route('/track', methods=['POST'])
 def track():
     url = request.form['url']
+    product_data = fetch_amazon_data(url)
+
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
     
-    # --- Mock data for demonstration ---
-    # In a real application, you would scrape the product details from the URL
-    # and fetch prices from other platforms.
-    if "samsung-galaxy-m14" in url.lower():
+    if product_data:
+        image_url = get_amazon_image(url, HEADERS)
+        save_product_to_db(product_data, url)
         product_info = {
-            "name": "Samsung Galaxy M14",
-            "price": "13,499",
-            "image_placeholder": "" # Empty for now, would be an actual image in a real app
+            "name": product_data['title'],
+            "price": product_data['price'],
+            "image_url": image_url
         }
+
         other_platforms = {
             "Flipkart": "13,299",
             "Meesho": "13,499",
             "BigBasket": "Not Available"
         }
     else:
-        # Default or error case
         product_info = {
-            "name": "Product Not Found (Mock)",
+            "name": "Product Not Found",
             "price": "N/A",
-            "image_placeholder": "No Image"
+            "image_url": None
         }
         other_platforms = {
             "Flipkart": "N/A",
             "Meesho": "N/A",
             "BigBasket": "N/A"
         }
-    # --- End Mock data ---
 
     return render_template_string(HTML_TEMPLATE, product_info=product_info, other_platforms=other_platforms)
+
 
 if __name__ == '__main__':
     app.run(debug=True)
