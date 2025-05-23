@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PricePulse - E-Commerce Price Tracker</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background-color: #f0f2f5; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding-top: 50px; }
+        .container { background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); width: 800px; padding-bottom: 30px; margin-bottom: 50px; }
+        .header { background-color: #3498db; color: white; padding: 20px 0; text-align: center; font-size: 24px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-bottom: 20px; }
+        .section { margin: 0 40px 20px 40px; }
+        .input-section { display: flex; align-items: center; margin-bottom: 20px; }
+        .input-section label { margin-right: 10px; font-weight: bold; }
+        .input-section input[type="text"] { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+        .input-section button { background-color: #2ecc71; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin-left: 10px; }
+        .input-section button:hover { background-color: #27ae60; }
+        .product-preview, .price-history-graph, .other-platforms { border: 1px solid #e0e0e0; border-radius: 4px; padding: 15px; margin-bottom: 20px; min-height: 80px; box-sizing: border-box; }
+        .product-preview { display: flex; align-items: center; }
+        .product-preview-image { width: 100px; height: 80px; border: 1px solid #ccc; background-color: #f9f9f9; margin-right: 15px; display: flex; justify-content: center; align-items: center; color: #888; font-size: 12px; }
+        .product-preview-image img { max-width: 100%; max-height: 100%; object-fit: contain; } /* Changed from width/height 100% */
+        .product-info p { margin: 5px 0; }
+        .price-info { font-weight: bold; }
+        .price-history-graph { height: 300px; display: flex; justify-content: center; align-items: center; color: #888; }
+        .other-platforms ul { list-style: none; padding: 0; margin: 0; }
+        .other-platforms li { margin-bottom: 5px; }
+        .section-title { font-weight: bold; margin-bottom: 10px; font-size: 18px; }
+        .message { padding: 10px; margin-bottom: 15px; border-radius: 4px; text-align: center; }
+        .message.success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;}
+        .message.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;}
+    </style>
+    <!-- Include Chart.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Include the Chart.js date adapter for time series charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">PricePulse - E-Commerce Price Tracker</div>
+
+        {% if message %}
+            <div class="section">
+                <div class="message {{ message_type }}">{{ message }}</div>
+            </div>
+        {% endif %}
+
+        <div class="section">
+            <form method="POST" action="/track" class="input-section">
+                <label for="url">Enter Amazon Product URL:</label>
+                <!-- The value attribute will retain the URL after submission -->
+                <input type="text" name="url" id="url" placeholder="Enter Amazon Product URL" required value="{{ submitted_url | default('', true) | e }}">
+                <button type="submit">Track Product</button>
+            </form>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Product Preview:</div>
+            <div class="product-preview">
+                <div class="product-preview-image">
+                    {% if product_info and product_info.image_url %}
+                        <img src="{{ product_info.image_url }}" alt="Product Image">
+                    {% else %}
+                        [Image]
+                    {% endif %}
+                </div>
+                <div class="product-info">
+                    <p><strong>{{ product_info.name if product_info else 'Product Name' }}</strong></p>
+                    <p class="price-info">Current Price: {{ product_info.price if product_info else 'N/A' }}</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Price History Graph:</div>
+            <div class="price-history-graph" id="priceChartContainer">
+                <!-- Canvas element for Chart.js -->
+                <canvas id="priceHistoryChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // This variable will be set by Flask/Jinja, containing the URL of the product whose history should be fetched.
+        // The `| e` filter escapes the URL for security. `default('', true)` ensures it's an empty string if undefined.
+        const productUrlForChart = "{{ submitted_url | default('', true) | e }}";
+        let priceChart = null; // Variable to hold the chart instance
+
+        // Function to clean price strings (e.g., "$19.99" -> 19.99)
+        function cleanPrice(priceString) {
+            if (typeof priceString !== 'string') return null;
+            // Remove currency symbols ($, €, £, ₹ etc.), commas, and any other non-numeric characters except the decimal point.
+            const cleaned = priceString.replace(/[^\d.]/g, '');
+            const numericValue = parseFloat(cleaned);
+            return isNaN(numericValue) ? null : numericValue;
+        }
+
+        // Async function to fetch price history and render the chart
+        async function fetchPriceHistory(productUrl) {
+            const chartContainer = document.getElementById('priceChartContainer');
+            const canvas = document.getElementById('priceHistoryChart');
+            const ctx = canvas.getContext('2d');
+
+            if (!productUrl) {
+                chartContainer.innerHTML = '<p>Enter a product URL above to track its price and see the history.</p>';
+                return;
+            }
+
+            // Encode the product URL to be safely used in a URL path
+            const encodedProductUrl = encodeURIComponent(productUrl);
+            const apiUrl = `/api/history/${encodedProductUrl}`; // Your Flask API endpoint
+
+            try {
+                const response = await fetch(apiUrl);
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error: "Failed to parse error response" }));
+                    console.error('Error fetching price history:', response.status, errorData);
+                    chartContainer.innerHTML = `<p>Error loading price history: ${errorData.error || response.statusText}. Product might not be tracked or API issue.</p>`;
+                    return;
+                }
+                const data = await response.json();
+
+                // Update product preview in case it changed or for consistency with historical data
+                if (data.product_title && data.product_title !== "N/A") {
+                    document.querySelector('.product-info strong').textContent = data.product_title;
+                }
+                if (data.product_image_url) {
+                    const imgDiv = document.querySelector('.product-preview-image');
+                    imgDiv.innerHTML = `<img src="${data.product_image_url}" alt="Product Image">`;
+                } else if (data.product_title !== "N/A") { // if title is valid but no image
+                    document.querySelector('.product-preview-image').textContent = '[Image]';
+                }
+
+
+                if (data.history && data.history.length > 0) {
+                    const labels = data.history.map(item => new Date(item.timestamp)); // Timestamps for X-axis
+                    const prices = data.history.map(item => cleanPrice(item.price)).filter(p => p !== null); // Cleaned prices for Y-axis
+
+                    if (prices.length === 0) {
+                         chartContainer.innerHTML = '<p>No valid price data found to plot for this product yet.</p>';
+                         return;
+                    }
+
+                    // If an old chart exists, destroy it before drawing a new one
+                    if (priceChart) {
+                        priceChart.destroy();
+                    }
+
+                    // Create new Chart.js line chart
+                    priceChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Price',
+                                data: prices,
+                                borderColor: 'rgb(52, 152, 219)',
+                                backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                                tension: 0.1, // Makes the line slightly curved
+                                fill: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false, // Allows chart to fill container height
+                            scales: {
+                                x: {
+                                    type: 'time', // Use time scale for X-axis
+                                    time: {
+                                        unit: 'day', // Display unit. Adjust as needed: 'hour', 'month'
+                                        tooltipFormat: 'yyyy-MM-dd HH:mm', // Format for tooltips
+                                        displayFormats: { // How dates are displayed on the axis
+                                            hour: 'HH:mm',
+                                            day: 'MMM d',
+                                            month: 'MMM yyyy'
+                                        }
+                                    },
+                                    title: {
+                                        display: true,
+                                        text: 'Date'
+                                    }
+                                },
+                                y: {
+                                    beginAtZero: false, // Y-axis doesn't have to start at 0
+                                    title: {
+                                        display: true,
+                                        text: 'Price'
+                                    },
+                                    ticks: {
+                                        callback: function(value, index, values) {
+                                            // Format Y-axis ticks as currency (e.g., $19.99)
+                                            // This is a basic example; you might want a more robust currency formatter
+                                            return '$' + value.toFixed(2);
+                                        }
+                                    }
+                                }
+                            },
+                            plugins: {
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            let label = context.dataset.label || '';
+                                            if (label) {
+                                                label += ': ';
+                                            }
+                                            if (context.parsed.y !== null) {
+                                                // Format tooltip value as currency
+                                                label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(context.parsed.y);
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    chartContainer.innerHTML = '<p>No price history available for this product yet. The first price point will appear after the next scheduled scrape (or if you just tracked it, it might take a moment to show).</p>';
+                }
+            } catch (error) {
+                console.error('JavaScript error fetching or processing price history:', error);
+                chartContainer.innerHTML = '<p>Could not load price history due to a client-side error. Check the browser console for details.</p>';
+            }
+        }
+
+        // When the DOM is fully loaded, try to fetch and display the chart
+        // if a product URL was passed from the server (meaning a product was just tracked or page reloaded with a tracked product).
+        document.addEventListener('DOMContentLoaded', () => {
+            if (productUrlForChart) {
+                fetchPriceHistory(productUrlForChart);
+            } else {
+                const chartContainer = document.getElementById('priceChartContainer');
+                chartContainer.innerHTML = '<p>Submit an Amazon product URL to track its price and see its history.</p>';
+            }
+        });
+    </script>
+</body>
+</html>

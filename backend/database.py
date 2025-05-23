@@ -110,5 +110,5 @@ def get_tracked_product_details(product_url):
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"title": row["title"], "image_url": row["image_url"]}
+        return {"title": row["title"], "image_url": row["image_url"]} 
     return None
